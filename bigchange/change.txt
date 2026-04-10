@@ -1,0 +1,5 @@
+要点1：
+数据包需要扩展：增加 raw_signal 字段
+data_packet 是在 主流程 main.py 中通过 ZMQ 接收并传递给故障检测器的：
+data = socket.recv_pyobj()
+需要增加raw_signal 字段

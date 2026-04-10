@@ -4,6 +4,8 @@ from .base import BaseFaultDetector
 from .bearing_fault import BearingFaultDetector
 from .bolt_loosen import BoltLoosenDetector
 from .rope_elongation import RopeElongationDetector
+from .motor_fault import MotorFaultDetector
+
 
 class FaultManager:
     def __init__(self, global_config: Dict):
@@ -11,13 +13,30 @@ class FaultManager:
         self.detectors: Dict[str, BaseFaultDetector] = {}      # name -> detector instance
         self.sensor_map: Dict[str, List[str]] = {}            # sensor_name -> list of detector names
         self._init_detectors()
-    
+
     def _init_detectors(self):
         det_cfg = self.global_config.get("fault_detectors", {})
         for det_name, det_conf in det_cfg.items():
             det_type = det_conf.get("type")
-            sensors = det_conf.get("sensors", [])
-            
+            sensors_raw = det_conf.get("sensors", [])
+
+            # 解析传感器配置，统一为字典列表（每个字典至少包含 'name'）
+            parsed_sensors = []
+            for item in sensors_raw:
+                if isinstance(item, str):
+                    parsed_sensors.append({"name": item})
+                elif isinstance(item, dict):
+                    # 确保至少有 name 字段
+                    if "name" in item:
+                        parsed_sensors.append(item)
+                    else:
+                        mylog.error(f"检测器 {det_name} 的传感器配置缺少 'name' 字段: {item}")
+                else:
+                    mylog.error(f"检测器 {det_name} 的传感器配置格式错误: {item}")
+
+            # 将解析后的传感器列表存入 det_conf，供检测器使用
+            det_conf["parsed_sensors"] = parsed_sensors
+
             # 根据类型实例化检测器
             if det_type == "bearing":
                 detector = BearingFaultDetector(det_name, det_conf, self.global_config)
@@ -25,20 +44,24 @@ class FaultManager:
                 detector = BoltLoosenDetector(det_name, det_conf)
             elif det_type == "rope_elongation":
                 detector = RopeElongationDetector(det_name, det_conf)
+            elif det_type == "motor":
+                detector = MotorFaultDetector(det_name, det_conf, self.global_config)
             else:
                 mylog.error(f"Unknown detector type: {det_type}")
                 continue
-            
+
             self.detectors[det_name] = detector
-            
-            # 建立传感器到检测器的映射
-            for sensor in sensors:
-                if sensor not in self.sensor_map:
-                    self.sensor_map[sensor] = []
-                self.sensor_map[sensor].append(det_name)
-            
-            mylog.info(f"Initialized detector '{det_name}' for sensors: {sensors}")
-    
+
+            # 建立传感器名称到检测器的映射
+            for sensor_info in parsed_sensors:
+                sensor_name = sensor_info["name"]
+                if sensor_name not in self.sensor_map:
+                    self.sensor_map[sensor_name] = []
+                self.sensor_map[sensor_name].append(det_name)
+
+            mylog.info(f"Initialized detector '{det_name}' (type: {det_type}) for sensors: "
+                       f"{[s['name'] for s in parsed_sensors]}")
+
     def process(self, sensor_name: str, data_packet: Dict) -> List[Tuple[str, bool, Dict]]:
         """
         处理传感器数据，返回所有触发的故障
@@ -57,11 +80,11 @@ class FaultManager:
             except Exception as e:
                 mylog.error(f"Error in detector '{det_name}' for sensor '{sensor_name}': {e}")
         return results
-    
+
     def reset_detector(self, detector_name: str, sensor_name: Optional[str] = None):
         if detector_name in self.detectors:
             self.detectors[detector_name].reset(sensor_name)
-    
+
     def reset_all(self):
         for detector in self.detectors.values():
             detector.reset()

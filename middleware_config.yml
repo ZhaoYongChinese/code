@@ -1,34 +1,43 @@
-# ====== 原有配置 ======
+# ====== 全局配置 ======
 log_level: "INFO"
 ALERT_GAP: 30                 # 报警节流间隔（秒）
-SAMPLING_RATE: 25600          # 采样率
+
+# 采样率配置（避免重复定义）
+SAMPLING_RATE: 25600      # 原始数据采样率（如需要）
+PROC_SAMPLING_RATE: 8000      # 处理用采样率（电机故障检测使用）
+
 FAULT_WINDOW: 10              # 轴承故障窗口大小
 PREDICT_WINDOW: 10            # 趋势预测窗口
 FAULT_TRIGGER_COUNT: 3        # 轴承故障触发次数
 
-bearing:                      # 轴承参数
+# 轴承参数
+bearing:
   n: 9
   d: 12.7
   D: 65.0
   beta: 0
   rpm: 1450
 
-alert_name:                   # 报警码对应描述
+# 报警码对应描述
+alert_name:
   "9001": "轴承故障"
   "9002": "螺栓松动"
   "9003": "钢丝绳伸长"
+  "9004": "电机故障"
 
-escalator_component_name:     # 部件与报警码映射
+# 部件与报警码映射
+escalator_component_name:
   "bearing": ["9001"]
   "bolt": ["9002"]
   "rope": ["9003"]
+  "motor": ["9004"]
 
-# ====== 新增：故障检测器配置 ======
+# ====== 故障检测器配置 ======
 fault_detectors:
-  # 轴承故障检测器（使用原有参数）
+  # 轴承故障检测器
   bearing:
     type: "bearing"
-    sensors: ["WXT01_p001_9001", "WXT02_p002_9001"]   # 需要检测轴承故障的传感器列表
+    sensors: ["WXT01_p001_9001", "WXT02_p002_9001"]
     params:
       window_size: 10
       expand_ratio: 8
@@ -50,3 +59,22 @@ fault_detectors:
     params:
       trend_window: 100
       slope_threshold: 0.01
+
+  # 电机故障检测器（支持传感器独立阈值）
+  motor_fault:
+    type: "motor"
+    sensors:
+      - name: "WXT02_p004_9003"
+        custom_threshold: 3.1        # 该传感器的独立阈值倍数
+      - name: "WXT03_p005_9004"
+        custom_threshold: 2.8
+    params:
+      window_size: 10
+      expand_ratio: 8                # 默认阈值倍数（当 custom_threshold 未设置时使用）
+      trigger_count: 3
+      # 电机诊断专用阈值
+      ratio2_misalign: 0.6
+      ratio3_misalign: 0.3
+      ratio2_eccentric: 0.3
+      ratio3_eccentric: 0.15
+      sample_rate: 8000              # 处理采样率
