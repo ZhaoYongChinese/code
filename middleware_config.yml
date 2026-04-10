@@ -1,0 +1,52 @@
+# ====== 原有配置 ======
+log_level: "INFO"
+ALERT_GAP: 30                 # 报警节流间隔（秒）
+SAMPLING_RATE: 25600          # 采样率
+FAULT_WINDOW: 10              # 轴承故障窗口大小
+PREDICT_WINDOW: 10            # 趋势预测窗口
+FAULT_TRIGGER_COUNT: 3        # 轴承故障触发次数
+
+bearing:                      # 轴承参数
+  n: 9
+  d: 12.7
+  D: 65.0
+  beta: 0
+  rpm: 1450
+
+alert_name:                   # 报警码对应描述
+  "9001": "轴承故障"
+  "9002": "螺栓松动"
+  "9003": "钢丝绳伸长"
+
+escalator_component_name:     # 部件与报警码映射
+  "bearing": ["9001"]
+  "bolt": ["9002"]
+  "rope": ["9003"]
+
+# ====== 新增：故障检测器配置 ======
+fault_detectors:
+  # 轴承故障检测器（使用原有参数）
+  bearing:
+    type: "bearing"
+    sensors: ["WXT01_p001_9001", "WXT02_p002_9001"]   # 需要检测轴承故障的传感器列表
+    params:
+      window_size: 10
+      expand_ratio: 8
+      trigger_count: 3
+
+  # 螺栓松动检测器
+  bolt_loosen:
+    type: "bolt_loosen"
+    sensors: ["WXT01_p001_9002", "WXT01_p003_9002"]
+    params:
+      window_size: 20
+      freq_bands: [[100, 200], [500, 800]]
+      trigger_ratio: 2.0
+
+  # 钢丝绳伸长检测器
+  rope_elongation:
+    type: "rope_elongation"
+    sensors: ["WXT02_p004_9003"]
+    params:
+      trend_window: 100
+      slope_threshold: 0.01
