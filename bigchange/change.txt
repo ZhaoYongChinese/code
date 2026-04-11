@@ -6,6 +6,7 @@
 }   #固定螺栓松动，可以只要这两个不要Rms和FFT
 钢丝绳钢带要求特殊说明三个方向的数据都要用上，参考何时如下
 该检测需要电梯处于匀速稳态运行，考虑数据传输效率，在发送端进行判断后再传输，具体参考steady.py
+需要初始基线数据，需要先运行calibrate_rope_baseline.py采集基线数据
  {
     "sensor_name": "WXT02_p004_9003",
     "timestamp": time.time(),
