@@ -1,5 +1,30 @@
-要点1：
-数据包需要扩展：增加 raw_signal 字段
-data_packet 是在 主流程 main.py 中通过 ZMQ 接收并传递给故障检测器的：
-data = socket.recv_pyobj()
-需要增加raw_signal 字段
+需要在原有输入结构或者硬件层面做出的改动如下：
+发送端要添加的数据：
+没有添加说明的数据不用管还是传输Rms和FFT就行
+{   "kurtosis": kurt_value,  #超量峭度（excess kurtosis）    
+    "crest_factor": cf_value
+}   #固定螺栓松动，可以只要这两个不要Rms和FFT
+钢丝绳钢带要求特殊说明三个方向的数据都要用上，参考何时如下
+该检测需要电梯处于匀速稳态运行，考虑数据传输效率，在发送端进行判断后再传输，具体参考steady.py
+ {
+    "sensor_name": "WXT02_p004_9003",
+    "timestamp": time.time(),
+    "running_state": "steady",          # 由平稳性检测器判定
+    "rope_speed": 2.48,                 # 实时绳速，若无则 None
+    "load_weight": 750,                 # 实时载重，若无则 None
+
+    # 时域特征（三轴）
+    "rms": {"Z": 0.12, "X": 0.08, "Y": 0.05},
+    "peak_factor": {"Z": 4.2, "X": 3.8, "Y": 3.5},
+    "impulse_factor": {"Z": 5.1, "X": 4.5, "Y": 4.0},
+    "margin_factor": {"Z": 6.3, "X": 5.7, "Y": 5.0},
+
+    # 频谱数据（三轴）
+    "fft_all": {
+        "Z": {"fft": array_Z, "index": freq_Z},
+        "X": {"fft": array_X, "index": freq_X},
+        "Y": {"fft": array_Y, "index": freq_Y}
+    }
+}
+硬件方面要求：
+检测钢丝绳、钢带需要绳速和载重

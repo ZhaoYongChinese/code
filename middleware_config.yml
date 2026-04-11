@@ -46,19 +46,39 @@ fault_detectors:
   # 螺栓松动检测器
   bolt_loosen:
     type: "bolt_loosen"
-    sensors: ["WXT01_p001_9002", "WXT01_p003_9002"]
+    sensors:
+      - name: "WXT01_p001_9002"
+        kurtosis_threshold: 6.5        # 该传感器独立阈值
+        crest_factor_threshold: 5.2
+        combine_logic: "and"
+      - name: "WXT01_p003_9002"
+        # 未指定则使用 params 中的默认值
     params:
-      window_size: 20
-      freq_bands: [[100, 200], [500, 800]]
-      trigger_ratio: 2.0
+      window_size: 10          # 历史窗口（若未来需要动态基线）
+      trigger_count: 3
+      kurtosis_threshold: 6.0
+      crest_factor_threshold: 5.0
+      combine_logic: "and"
 
   # 钢丝绳伸长检测器
-  rope_elongation:
-    type: "rope_elongation"
-    sensors: ["WXT02_p004_9003"]
+  rope_fault:
+    type: "rope"
+    sensors:
+      - name: "WXT02_p004_9003"
+        # 静态默认参数（当发送端未提供实时值时使用）
+        default_rope_speed: 2.5        # m/s
+        default_load_weight: 800       # kg
+        rope_lay_length: 0.12          # 钢丝绳捻距 l (m)，静态固定值
+        sheave_diameter: 0.6           # 轿顶轮节圆直径 D (m)，静态固定值
     params:
-      trend_window: 100
-      slope_threshold: 0.01
+      window_size: 10
+      trigger_count: 3
+      peak_factor_thresh: 5.0
+      impulse_factor_thresh: 6.0
+      margin_factor_thresh: 7.0
+      freq_shift_ratio: 0.05
+      rope_pass_amp_ratio: 3.0
+      sideband_check: true
 
   # 电机故障检测器（支持传感器独立阈值）
   motor_fault:

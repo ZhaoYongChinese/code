@@ -1,14 +1,13 @@
 import numpy as np
 from typing import Dict, Optional, Tuple, Any
-from scipy.fft import fft, fftfreq
-from scipy.signal import find_peaks, butter, filtfilt
+from scipy.signal import find_peaks
 from .base import BaseFaultDetector
 
 
 class MotorFaultDetector(BaseFaultDetector):
     """
     电机故障检测器：定子偏心 / 转子不对中
-    基于原始信号进行频谱分析，提取基频及倍频特征
+    直接使用 data_packet 中的 fft_all 频谱数据进行诊断
     """
 
     def __init__(self, name: str, config: Dict[str, Any], global_config: Dict = None):
@@ -35,35 +34,23 @@ class MotorFaultDetector(BaseFaultDetector):
         self.rms_history = {}       # sensor_name -> list of RMS values
         self.fault_counter = {}     # sensor_name -> counter
 
-    def _lowpass_filter(self, data, cutoff=1000, order=4):
-        """低通滤波"""
-        nyq = 0.5 * self.sample_rate
-        normal_cutoff = cutoff / nyq
-        b, a = butter(order, normal_cutoff, btype='low')
-        return filtfilt(b, a, data)
-
-    def _get_features(self, signal):
-        """提取频谱特征：基频及2、3、4倍频幅值"""
-        n = len(signal)
-        yf = fft(signal)
-        xf = fftfreq(n, 1 / self.sample_rate)[:n // 2]
-        amp_spectrum = 2.0 / n * np.abs(yf[:n // 2])
-
-        # 寻找峰值
-        peaks, _ = find_peaks(amp_spectrum, height=0.1 * np.max(amp_spectrum))
+    def _get_features_from_fft(self, spectrum, freqs):
+        """从 FFT 幅度谱和频率轴提取基频及倍频特征"""
+        # 寻找峰值（幅度大于最大值 10% 的峰）
+        peaks, _ = find_peaks(spectrum, height=0.1 * np.max(spectrum))
         if len(peaks) == 0:
             return None
 
         # 按幅值排序，取最大峰值作为基频
-        sorted_idx = sorted(peaks, key=lambda x: amp_spectrum[x], reverse=True)
-        f1 = xf[sorted_idx[0]]
-        amp1 = amp_spectrum[sorted_idx[0]]
+        sorted_idx = sorted(peaks, key=lambda x: spectrum[x], reverse=True)
+        f1 = freqs[sorted_idx[0]]
+        amp1 = spectrum[sorted_idx[0]]
 
         # 查找 2、3、4 倍频
         def get_amp(target_freq, tolerance=1.0):
-            idx = np.argmin(np.abs(xf - target_freq))
-            if abs(xf[idx] - target_freq) <= tolerance:
-                return amp_spectrum[idx]
+            idx = np.argmin(np.abs(freqs - target_freq))
+            if abs(freqs[idx] - target_freq) <= tolerance:
+                return spectrum[idx]
             else:
                 return 0.0
 
@@ -106,7 +93,7 @@ class MotorFaultDetector(BaseFaultDetector):
 
     def update(self, sensor_name: str, data_packet: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         rms_value = data_packet.get("rms_value")
-        raw_signal = data_packet.get("raw_signal")
+        fft_all = data_packet.get("fft_all")
         timestamp = data_packet.get("timestamp")
 
         if rms_value is None:
@@ -152,15 +139,12 @@ class MotorFaultDetector(BaseFaultDetector):
             "trigger_count": self.fault_trigger_count
         }
 
-        # 如果触发一级故障，且提供了原始信号，则进行精细诊断
-        if is_fault and raw_signal is not None:
+        # 如果触发一级故障，且提供了频谱数据，则进行精细诊断
+        if is_fault and fft_all is not None:
             try:
-                # 预处理
-                signal = np.array(raw_signal, dtype=float)
-                signal = signal - np.mean(signal)
-                signal = self._lowpass_filter(signal, cutoff=1000)
-
-                features = self._get_features(signal)
+                spectrum = np.array(fft_all["fft"])
+                freqs = np.array(fft_all["index"])
+                features = self._get_features_from_fft(spectrum, freqs)
                 if features is not None:
                     motor_fault, confidence = self._diagnose(features)
                     extra_info["motor_fault_type"] = motor_fault
@@ -173,7 +157,7 @@ class MotorFaultDetector(BaseFaultDetector):
                     }
                     self.mylog.info(f"电机故障诊断: {motor_fault} (置信度 {confidence:.2f})")
                 else:
-                    self.mylog.warning("无法提取频谱特征")
+                    self.mylog.warning("无法从频谱提取特征")
             except Exception as e:
                 self.mylog.error(f"电机故障精细诊断失败: {e}")
 
