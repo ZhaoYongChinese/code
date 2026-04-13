@@ -3,8 +3,9 @@ from loguru import logger as mylog
 from .base import BaseFaultDetector
 from .bearing_fault import BearingFaultDetector
 from .bolt_loosen import BoltLoosenDetector
-from .rope_elongation import RopeElongationDetector
+from .rope_fault import RopeElongationDetector, RopeFaultDetector
 from .motor_fault import MotorFaultDetector
+from .elevator_car import ElevatorCarFaultDetector
 
 
 class FaultManager:
@@ -42,10 +43,13 @@ class FaultManager:
                 detector = BearingFaultDetector(det_name, det_conf, self.global_config)
             elif det_type == "bolt_loosen":
                 detector = BoltLoosenDetector(det_name, det_conf)
-            elif det_type == "rope_elongation":
-                detector = RopeElongationDetector(det_name, det_conf)
+            elif det_type == "rope":
+                detector = RopeFaultDetector(det_name, det_conf, self.global_config)
             elif det_type == "motor":
                 detector = MotorFaultDetector(det_name, det_conf, self.global_config)
+            elif det_type == "elevator_car":
+                detector = ElevatorCarFaultDetector(det_name, det_conf, self.global_config)
+
             else:
                 mylog.error(f"Unknown detector type: {det_type}")
                 continue

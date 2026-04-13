@@ -12,6 +12,7 @@ class RopeFaultDetector(BaseFaultDetector):
     采用两级诊断：
     1. 时域指标（峰值因子/脉冲因子/裕度因子）连续超阈值筛查
     2. 频域精细诊断：固有频率下降检测伸长，绳通过频率边带检测张力不均
+    支持载重补偿，可存储多载重级别的基线。
     """
 
     def __init__(self, name: str, config: Dict[str, Any], global_config: Dict = None):
@@ -30,7 +31,11 @@ class RopeFaultDetector(BaseFaultDetector):
         self.fp_amp_ratio = self.params.get("rope_pass_amp_ratio", 3.0)
         self.sideband_check = self.params.get("sideband_check", True)
 
-        # 传感器独立配置（从 parsed_sensors 中提取）
+        # 载重补偿
+        self.load_compensation = self.params.get("load_compensation", False)
+        self.load_levels = self.params.get("load_levels", [])
+
+        # 传感器独立配置
         self.sensor_configs = {}
         for sensor_info in config.get("parsed_sensors", []):
             sensor_name = sensor_info["name"]
@@ -39,13 +44,13 @@ class RopeFaultDetector(BaseFaultDetector):
         # 内部状态
         self.screen_counter = {}      # 一级筛查计数器
 
-        # 基线数据：{sensor_name: {"f3": [f1, f2, f3], "fp_amp": float}}
+        # 基线数据结构：{sensor_name: {"load_XXX": {"f3": [...], "fp_amp": float}}}
         self.baseline = {}
         self.baseline_loaded = False
         self._load_baseline()
 
     def _get_baseline_path(self) -> str:
-        """获取基线文件路径（存储在项目根目录下的 rope_baseline.json）"""
+        """获取基线文件路径"""
         import sys
         base_dir = sys.path[0]
         return os.path.join(base_dir, "rope_baseline.json")
@@ -65,15 +70,19 @@ class RopeFaultDetector(BaseFaultDetector):
         else:
             self.mylog.warning(f"基线文件不存在: {path}，请先运行标定脚本")
 
-    def _save_baseline_to_file(self, baseline_data: Dict):
-        """保存基线到 JSON 文件（供标定脚本调用）"""
-        path = self._get_baseline_path()
-        try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(baseline_data, f, indent=2, ensure_ascii=False)
-            self.mylog.info(f"基线已保存至: {path}")
-        except Exception as e:
-            self.mylog.error(f"保存基线文件失败: {e}")
+    def _get_baseline_for_load(self, sensor_name: str, load_weight: Optional[float]) -> Optional[Dict]:
+        """根据载重获取最匹配的基线"""
+        if sensor_name not in self.baseline:
+            return None
+        sensor_base = self.baseline[sensor_name]
+        if not self.load_compensation or load_weight is None or not self.load_levels:
+            # 无载重补偿或载重未知，返回第一个基线（或名为 "default" 的）
+            return sensor_base.get("default") or next(iter(sensor_base.values()), None)
+
+        # 找到最接近的载重级别
+        closest_load = min(self.load_levels, key=lambda x: abs(x - load_weight))
+        key = f"load_{int(closest_load)}"
+        return sensor_base.get(key)
 
     def _compute_time_features(self, pf_dict: Dict, imp_dict: Dict, mar_dict: Dict) -> bool:
         """
@@ -102,25 +111,47 @@ class RopeFaultDetector(BaseFaultDetector):
         f_list.sort()
         return f_list
 
-    def _check_elongation(self, sensor_name: str, f3_current: List[float]) -> Tuple[bool, Optional[Dict]]:
-        """检查固有频率是否下降"""
-        if sensor_name not in self.baseline:
+    def _compute_band_energy(self, spectrum: np.ndarray, freqs: np.ndarray, center_freq: float, bandwidth: float = 2.0) -> float:
+        """计算中心频率附近带宽内的能量"""
+        mask = (freqs >= center_freq - bandwidth) & (freqs <= center_freq + bandwidth)
+        return float(np.sum(spectrum[mask] ** 2))
+
+    def _check_elongation(self, sensor_name: str, f3_current: List[float],
+                          spec_z: np.ndarray, freq_z: np.ndarray, baseline: Dict) -> Tuple[bool, Optional[Dict]]:
+        """检查固有频率是否下降（使用频段能量比较，更稳健）"""
+        if not baseline:
             return False, None
-        base_f3 = self.baseline[sensor_name].get("f3", [])
+        base_f3 = baseline.get("f3", [])
         if len(base_f3) < 3 or len(f3_current) < 3:
             return False, None
-        # 比较第三阶频率
-        shift = (base_f3[2] - f3_current[2]) / base_f3[2]
-        is_fault = shift > self.freq_shift_ratio
+
+        # 方法1：峰值频率偏移
+        shift_peak = (base_f3[2] - f3_current[2]) / base_f3[2] if base_f3[2] != 0 else 0
+
+        # 方法2：频段能量变化（推荐）
+        base_energy = baseline.get("f3_energy")
+        if base_energy is None and base_f3:
+            # 若基线未存储能量，动态计算
+            base_energy = self._compute_band_energy(spec_z, freq_z, base_f3[2])
+        current_energy = self._compute_band_energy(spec_z, freq_z, f3_current[2])
+        energy_ratio = current_energy / (base_energy + 1e-10)
+        # 能量下降超过阈值（能量比<1表示下降）
+        energy_drop = energy_ratio < (1 - self.freq_shift_ratio)
+
+        is_fault = shift_peak > self.freq_shift_ratio or energy_drop
         extra = {
-            "f3_shift_ratio": shift,
+            "f3_shift_ratio": shift_peak,
             "base_f3": base_f3,
-            "current_f3": f3_current
+            "current_f3": f3_current,
+            "base_energy": base_energy,
+            "current_energy": current_energy,
+            "energy_ratio": energy_ratio
         }
         return is_fault, extra
 
     def _check_tension_imbalance(self, sensor_name: str, spectrum: np.ndarray, freqs: np.ndarray,
-                                 rope_speed: float, lay_length: float, sheave_dia: float) -> Tuple[bool, Optional[Dict]]:
+                                 rope_speed: float, lay_length: float, sheave_dia: float,
+                                 baseline: Dict) -> Tuple[bool, Optional[Dict]]:
         """检查张力不均：fₚ幅值升高及边带"""
         if rope_speed is None:
             return False, None
@@ -131,9 +162,9 @@ class RopeFaultDetector(BaseFaultDetector):
         idx_fp = np.argmin(np.abs(freqs - fp))
         fp_amp = spectrum[idx_fp]
 
-        base_fp_amp = self.baseline.get(sensor_name, {}).get("fp_amp")
+        base_fp_amp = baseline.get("fp_amp") if baseline else None
         if base_fp_amp is None:
-            base_fp_amp = fp_amp * 0.5  # 若基线无该值，临时使用当前值的一半
+            base_fp_amp = fp_amp * 0.5
 
         amp_ratio = fp_amp / (base_fp_amp + 1e-10)
 
@@ -171,6 +202,7 @@ class RopeFaultDetector(BaseFaultDetector):
         imp = data_packet.get("impulse_factor", {})
         mar = data_packet.get("margin_factor", {})
         fft_all = data_packet.get("fft_all", {})
+        load_weight = data_packet.get("load_weight")
 
         # 一级筛查：时域指标
         time_abnormal = self._compute_time_features(pf, imp, mar)
@@ -190,33 +222,34 @@ class RopeFaultDetector(BaseFaultDetector):
 
         final_fault = False
         if is_screen_trigger and fft_all:
-            # 取Z轴频谱
             if "Z" not in fft_all:
                 self.mylog.warning(f"传感器 {sensor_name} 缺少Z轴频谱数据")
                 return False, extra_info
             spec_z = np.array(fft_all["Z"]["fft"])
             freq_z = np.array(fft_all["Z"]["index"])
 
+            # 获取适配载重的基线
+            baseline = self._get_baseline_for_load(sensor_name, load_weight)
+            if baseline is None:
+                self.mylog.warning(f"传感器 {sensor_name} 无可用基线")
+
             # 伸长/松动检测
             f3_current = self._find_natural_freqs(spec_z, freq_z)
-            elong_fault, elong_extra = self._check_elongation(sensor_name, f3_current)
-            if elong_fault:
-                final_fault = True
-                extra_info["elongation"] = elong_extra
+            if baseline:
+                elong_fault, elong_extra = self._check_elongation(sensor_name, f3_current, spec_z, freq_z, baseline)
+                if elong_fault:
+                    final_fault = True
+                    extra_info["elongation"] = elong_extra
 
             # 张力不均检测
             sensor_cfg = self.sensor_configs.get(sensor_name, {})
-            # 获取绳速：优先实时值，否则默认值
-            rope_speed = data_packet.get("rope_speed")
-            if rope_speed is None:
-                rope_speed = sensor_cfg.get("default_rope_speed")
-            # 静态参数（捻距、轮径）
+            rope_speed = data_packet.get("rope_speed") or sensor_cfg.get("default_rope_speed")
             lay_length = sensor_cfg.get("rope_lay_length", 0.12)
             sheave_dia = sensor_cfg.get("sheave_diameter", 0.6)
 
-            if rope_speed is not None:
+            if rope_speed is not None and baseline:
                 tens_fault, tens_extra = self._check_tension_imbalance(
-                    sensor_name, spec_z, freq_z, rope_speed, lay_length, sheave_dia
+                    sensor_name, spec_z, freq_z, rope_speed, lay_length, sheave_dia, baseline
                 )
                 if tens_fault:
                     final_fault = True
